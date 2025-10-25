@@ -77,11 +77,33 @@ sys_sleep(void)
 
 
 #ifdef LAB_PGTBL
+#define MAXSCAN 32
+extern pte_t *walk(pagetable_t pagetable, uint64 va, int alloc);
 int
 sys_pgaccess(void)
 {
-  // lab pgtbl: your code here.
-  return 0;
+  uint64 vaddr;
+  int n;
+  uint64 dstva;
+  if(argaddr(0, &vaddr) < 0)
+    return -1;
+  if(argint(1, &n) < 0)
+    return -1;
+  if(argaddr(2, &dstva) < 0)
+    return -1;
+  if(n>MAXSCAN) 
+    panic("over MAXSCAN");
+  pagetable_t pagetable=myproc()->pagetable;
+  int buffer=0;
+  for(int i=0;i<n;i++){
+    pte_t* pte=walk(pagetable,vaddr + i*PGSIZE,0);
+    if(pte==0) panic("pte should exist");
+    if(*pte & PTE_A){
+      buffer |= (1L<<i);
+      *pte &= ~PTE_A;
+    }
+  }
+  return copyout(pagetable,dstva,(char*)&buffer,sizeof(buffer));
 }
 #endif
 

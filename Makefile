@@ -307,6 +307,11 @@ qemu: $K/kernel fs.img
 qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+gdb:
+	gdb-multiarch \
+		-ex "set architecture riscv:rv64" \
+		-ex "file kernel/kernel" \
+		-ex "target remote localhost:26000"
 
 ifeq ($(LAB),net)
 # try to generate a unique port for the echo server
