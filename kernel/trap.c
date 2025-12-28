@@ -66,7 +66,19 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
-    // ok
+    if(which_dev==2){
+      // timer interrupt
+      if(p->in_alarm == 0){
+        p->ticks++;
+        if(p->alarmticks >0 && p->ticks >= p->alarmticks){
+          //到达报警间隔，调用用户注册的处理函数
+          p->ticks = 0;
+          memmove((void*)p->alarm_trapframe, (void*)p->trapframe, sizeof(struct trapframe));
+          p->trapframe->epc = (uint64)(p->handler);
+          p->in_alarm = 1;
+        }
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

@@ -1,0 +1,14 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "xv6-qemu-gdb",
+      "type": "shell",
+      "command": "make CPUS=1 qemu-gdb",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}
