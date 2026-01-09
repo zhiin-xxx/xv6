@@ -23,9 +23,22 @@ struct {
   struct run *freelist;
 } kmem;
 
+//物理页面引用计数
+#define REFpages ((PHYSTOP-KERNBASE)/PGSIZE)
+struct mem_ref
+{
+  struct spinlock lock;
+  int cnt;
+};
+struct mem_ref mem_ref[REFpages];
+
 void
 kinit()
 {
+  for(int i=0;i<REFpages;i++){
+    initlock(&mem_ref[i].lock,"mem_ref");
+    mem_ref[i].cnt=0;
+  }
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
 }
@@ -51,17 +64,39 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  uint page_index = ((uint64)pa - KERNBASE) / PGSIZE;
+  acquire(&mem_ref[page_index].lock);
+  if(mem_ref[page_index].cnt > 0){
+    mem_ref[page_index].cnt--;
+  }
+  int cnt = mem_ref[page_index].cnt;
+  release(&mem_ref[page_index].lock);
+  if(cnt > 0){
+    return;
+  }
+
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
-
   acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
+
 }
 
+void
+kaddref(void *pa)
+{
+
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kaddref");
+  uint page_index = ((uint64)pa - KERNBASE) / PGSIZE;
+  acquire(&mem_ref[page_index].lock);
+  mem_ref[page_index].cnt++;
+  release(&mem_ref[page_index].lock);
+}
 // Allocate one 4096-byte page of physical memory.
 // Returns a pointer that the kernel can use.
 // Returns 0 if the memory cannot be allocated.
@@ -72,11 +107,14 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r){
     kmem.freelist = r->next;
+  }
   release(&kmem.lock);
 
-  if(r)
+  if(r){
     memset((char*)r, 5, PGSIZE); // fill with junk
+    kaddref((void*)r);
+  }
   return (void*)r;
 }

@@ -297,26 +297,36 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // physical memory.
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
+void
+kaddref(void *pa);
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    // 清除父进程中所有PTE的PTE_W位，并且设置PTE_COW位，表示所在页是一个写时复制页（多个进程引用同个物理页）
+    // 如果该页本身就是不可写（只读），则不会添加这个标志位
+    if (*pte & PTE_W)
+        *pte = (*pte & ~PTE_W) | PTE_COW;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
+    kaddref((void*)pa);
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
   }
@@ -356,7 +366,26 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
-    memmove((void *)(pa0 + (dstva - va0)), src, n);
+    if(va0>=MAXVA)
+      return -1;
+    pte_t *pte = walk(pagetable, va0, 0);
+    if(pte  && (*pte & PTE_V)  && (*pte & PTE_COW)){ //这个时候还是共享页面的状态 不能直接写入物理页面
+      char *mem = kalloc();
+        if(mem == 0){
+          return -1;
+        } else {
+          memmove(mem, (char*)pa0, PGSIZE);
+          memmove((void *)(mem + (dstva - va0)), src, n);
+          *pte = PA2PTE(mem) | PTE_FLAGS(*pte); //虚拟地址和页表的映射关系无需改变 只要改变最后一项页表项的物理地址
+          *pte |= PTE_W;
+          *pte &= ~PTE_COW;
+          kfree((void*)pa0);
+          sfence_vma();
+
+        }    
+    }
+    else
+      memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
     src += n;
