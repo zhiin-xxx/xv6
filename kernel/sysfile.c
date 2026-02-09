@@ -321,6 +321,37 @@ sys_open(void)
     end_op();
     return -1;
   }
+  int thres=0;
+  struct inode* prev_ip;
+  if(ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0){
+    while(ip->type == T_SYMLINK && thres < 10){
+      // read the symlink target
+      char buf[MAXPATH];
+      if(readi(ip, 0, (uint64)buf, 0, ip->size) != ip->size){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      buf[ip->size] = 0;
+      prev_ip=ip;
+      if((ip= namei(buf)) == 0){
+        iunlockput(prev_ip);
+        end_op();
+        return -1;
+      }else
+      {
+        iunlockput(prev_ip);
+        ilock(ip);
+      }
+      thres++;
+    }
+    if(thres == 10){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    
+  }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
@@ -483,4 +514,53 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+    char name[DIRSIZ], path[MAXPATH], target[MAXPATH];
+    struct inode *dp, *ip;
+
+    if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+      return -1;
+    begin_op();
+    if((dp = nameiparent(path, name)) == 0){
+      end_op();
+      return -1;
+    }
+
+    ilock(dp);
+    
+    if((ip = dirlookup(dp, name, 0)) != 0){
+      iunlockput(dp);
+      end_op();
+      return -1;
+    }
+
+    if((ip = ialloc(dp->dev, T_SYMLINK)) == 0){
+        iunlockput(dp);
+        end_op();
+        panic("symlink: ialloc");
+        return -1;
+    }
+
+    ilock(ip);
+    ip->nlink = 1;
+    ip->size = strlen(target);
+    if(writei(ip, 0, (uint64)target, 0, ip->size) != ip->size){
+      iunlockput(ip);
+      iunlockput(dp);
+      end_op();
+      return -1;
+    }
+    iupdate(ip);
+    iunlockput(ip);
+    if(dirlink(dp, name, ip->inum) < 0)
+      panic("symlink: dirlink");
+
+    iunlockput(dp);
+    end_op();
+    return 0;
+ 
 }
