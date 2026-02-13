@@ -5,7 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+#include "fcntl.h"
 struct spinlock tickslock;
 uint ticks;
 
@@ -33,6 +33,12 @@ trapinithart(void)
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
 //
+extern pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc);
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+
 void
 usertrap(void)
 {
@@ -67,7 +73,68 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else if(r_scause()==13){
+    printf("usertrap() page fault: pid=%d va=%p\n", p->pid, r_stval());
+    // // handle page fault
+    uint64 va = r_stval();
+    uint64 a = PGROUNDDOWN(va);
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte && (*pte & PTE_V)){ 
+      // 已经映射，可能是权限 fault 
+      printf("usertrap() fail?: access fault pid=%d va=%p\n", p->pid, va);
+      p->killed = 1; 
+    }
+    else{
+        struct vma* vmap=0;
+        for(int i=0;i<16;i++){
+          if(p->vmas[i].used && va>=p->vmas[i].start && va<p->vmas[i].start+p->vmas[i].length){
+            vmap=&p->vmas[i];
+            break;
+          }
+        }
+
+        if(vmap == 0){
+          p->killed = 1;
+        }
+        else{
+          uint mode=PTE_U| PTE_V;
+          if(vmap->prot & PROT_READ)
+            mode |= PTE_R;
+          if(vmap->prot & PROT_WRITE)
+            mode |= PTE_W;
+          if(vmap->prot & PROT_EXEC)
+            mode |= PTE_X;
+          
+          char* mem=kalloc();
+          memset(mem, 0, PGSIZE);
+          if(mem == 0){
+            p->killed = 1;
+          }
+          else{
+            if(mappages(p->pagetable, a, PGSIZE,
+                          (uint64)mem, mode) < 0){
+                  kfree(mem);
+                  printf("usertrap() fail?: mappage failed pid=%d va=%p\n", p->pid, va);
+                  p->killed = 1;
+                }
+                else{
+                  // load data from file
+                  if(vmap->file != 0) {
+                    uint64 offset_in_file = vmap->offset + (a - vmap->start);
+                    ilock(vmap->file->ip);
+                    readi(vmap->file->ip, 0, (uint64)mem, offset_in_file, PGSIZE);
+                    iunlock(vmap->file->ip);
+                  }
+                  vmap->mapcnt+=1;
+                  printf("usertrap() success!: handled page fault pid=%d va=%p vma_start=%p length=%d prot=%d mapcnt=%d\n", p->pid, va, vmap->start, vmap->length, vmap->prot, vmap->mapcnt);
+                }
+          }
+        }
+        
+    }
+  } 
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

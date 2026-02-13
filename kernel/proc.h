@@ -81,6 +81,19 @@ struct trapframe {
 };
 
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+struct vma {
+  uint64 start;      // 映射起始虚拟地址
+  uint64 length;     // 映射字节数（page-aligned 或原始 length）
+  int prot;          // PROT_READ / PROT_WRITE
+  int flags;         // MAP_SHARED / MAP_PRIVATE
+
+  struct file *file; // 对应的文件
+  uint64 offset;     // 文件偏移（lab 里永远是 0）
+
+  int used;          // 该 vma 是否在用
+  uint64 mapcnt;    //（延迟申请）已经映射的页数量
+  uint64 validaddr;   // 记录已经 munmap 的最后地址
+};
 
 // Per-process state
 struct proc {
@@ -105,4 +118,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct vma vmas[16];         // Process's VMAs
+  uint64 sz_mapped;          // Total mapped size in bytes
 };

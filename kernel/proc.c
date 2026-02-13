@@ -141,6 +141,11 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  for(int i=0;i<16;i++) {
+    p->vmas[i].used = 0;
+    p->vmas[i].mapcnt = 0;
+  }
+  p->sz_mapped=0;
   return p;
 }
 
@@ -287,8 +292,25 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+  
   np->sz = p->sz;
 
+  np->sz_mapped=p->sz_mapped;
+  for(int i = 0; i < 16; i++) {
+    struct vma *vma = &p->vmas[i];
+    if(vma->used) {
+      np->vmas[i].start = vma->start;
+      np->vmas[i].length = vma->length;
+      np->vmas[i].prot = vma->prot;
+      np->vmas[i].flags = vma->flags;
+      np->vmas[i].file = vma->file;
+      filedup(np->vmas[i].file);
+      np->vmas[i].offset = vma->offset;
+      np->vmas[i].used = vma->used;
+      np->vmas[i].mapcnt = 0;
+      printf("fork: copied vma %d, start=%p, length=%d---pid:%d\n", i, vma->start, vma->length, myproc()->pid);
+    }
+  }
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -333,16 +355,44 @@ reparent(struct proc *p)
   }
 }
 
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state
 // until its parent calls wait().
+extern pte_t *
+walk(pagetable_t pagetable, uint64 va, int alloc);
 void
 exit(int status)
 {
   struct proc *p = myproc();
+  printf("exiting: process %d exited with status %d\n", p->pid, status);
 
   if(p == initproc)
     panic("init exiting");
+
+  struct vma *vma=0;
+  for(int i = 0; i < 16; i++) {
+    vma = &myproc()->vmas[i];
+    if(vma->used) {
+      if((vma->flags & MAP_SHARED) &&(vma->prot & PROT_WRITE)) {
+        filewrite(vma->file, vma->start, vma->length);
+      }
+      for(int i=0;i<vma->length/PGSIZE;i++){
+        pte_t *pte = walk(p->pagetable, vma->start + i*PGSIZE, 0);
+        if(pte && (*pte & PTE_V)){ 
+          uvmunmap(myproc()->pagetable, vma->start + i*PGSIZE, 1, 1);
+          printf("exit: unmapped vma %d, start=%p, length=%d\n", i, vma->start + i*PGSIZE, PGSIZE);
+        }
+      }
+      vma->used = 0;
+      vma->mapcnt =0;
+      fileclose(vma->file);
+      myproc()->sz_mapped -= vma->length;
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
@@ -369,6 +419,7 @@ exit(int status)
   acquire(&p->lock);
 
   p->xstate = status;
+  printf("exit: process %d exited with status %d\n", p->pid, status);
   p->state = ZOMBIE;
 
   release(&wait_lock);
@@ -386,7 +437,7 @@ wait(uint64 addr)
   struct proc *np;
   int havekids, pid;
   struct proc *p = myproc();
-
+  printf("waiting: process %d waiting for a child to exit\n", p->pid);
   acquire(&wait_lock);
 
   for(;;){
@@ -425,6 +476,8 @@ wait(uint64 addr)
     // Wait for a child to exit.
     sleep(p, &wait_lock);  //DOC: wait-sleep
   }
+  printf("wait: process %d waiting for a child to exit\n", p->pid);
+
 }
 
 // Per-CPU process scheduler.
